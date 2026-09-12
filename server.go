@@ -56,6 +56,8 @@ type page struct {
 	Anomalies int
 	Users     int
 	Interval  time.Duration
+	Sort, Dir string
+	UserQ     string
 }
 
 func (s *state) snapshot(cfg config) page {
@@ -75,16 +77,28 @@ func (s *state) snapshot(cfg config) page {
 		r.Trend = sparkline(s.trend[v.user+"|"+v.metric])
 		p.Rows = append(p.Rows, r)
 	}
-	sort.SliceStable(p.Rows, func(i, j int) bool {
-		if p.Rows[i].Anomaly != p.Rows[j].Anomaly {
-			return p.Rows[i].Anomaly
-		}
-		if p.Rows[i].User != p.Rows[j].User {
-			return p.Rows[i].User < p.Rows[j].User
-		}
-		return p.Rows[i].Metric < p.Rows[j].Metric
-	})
 	return p
+}
+
+func sortRows(rows []row, key, dir string) {
+	less := func(a, b row) bool {
+		switch key {
+		case "user":
+			return a.User < b.User
+		case "metric":
+			return a.Metric < b.Metric
+		case "ratio":
+			return a.Ratio < b.Ratio
+		default: // status: anomalies first
+			return a.Anomaly && !b.Anomaly
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if dir == "desc" {
+			return less(rows[j], rows[i])
+		}
+		return less(rows[i], rows[j])
+	})
 }
 
 // sparkline renders ratios as block chars; 1.0 sits mid-scale, clipped to [0, 2].
@@ -103,7 +117,9 @@ func newServer(st *state, cfg config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		p := st.snapshot(cfg)
-		if u := r.URL.Query().Get("user"); u != "" {
+		q := r.URL.Query()
+		if u := q.Get("user"); u != "" {
+			p.UserQ = u
 			var rows []row
 			for _, x := range p.Rows {
 				if x.User == u {
@@ -111,6 +127,14 @@ func newServer(st *state, cfg config) http.Handler {
 				}
 			}
 			p.Rows = rows
+		}
+		p.Sort, p.Dir = q.Get("sort"), q.Get("dir")
+		// Default: anomalies first, then user, then metric. Explicit sort applies on top of that.
+		sortRows(p.Rows, "metric", "asc")
+		sortRows(p.Rows, "user", "asc")
+		sortRows(p.Rows, "status", "asc")
+		if p.Sort != "" {
+			sortRows(p.Rows, p.Sort, p.Dir)
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = tmpl.Execute(w, p)
@@ -124,6 +148,21 @@ func newServer(st *state, cfg config) http.Handler {
 
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"f": func(x float64) string { return template.HTMLEscapeString(trimFloat(x)) },
+	"th": func(p page, key, label string) template.HTML {
+		dir, mark := "asc", ""
+		if p.Sort == key {
+			if p.Dir != "desc" {
+				dir, mark = "desc", " ▲"
+			} else {
+				mark = " ▼"
+			}
+		}
+		u := "/?sort=" + key + "&dir=" + dir
+		if p.UserQ != "" {
+			u += "&user=" + template.URLQueryEscaper(p.UserQ)
+		}
+		return template.HTML(`<th><a href="` + u + `">` + template.HTMLEscapeString(label) + mark + `</a></th>`)
+	},
 }).Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><meta http-equiv="refresh" content="60">
 <title>anomaly</title>
@@ -132,6 +171,7 @@ body{font:14px system-ui,sans-serif;margin:1.5rem;color:#222}
 table{border-collapse:collapse;width:100%}
 th,td{padding:.3rem .6rem;border-bottom:1px solid #ddd;text-align:left;white-space:nowrap}
 th{background:#f4f4f4;position:sticky;top:0}
+th a{color:inherit;text-decoration:none}
 tr.anomaly{background:#fde8e8}
 .status{font-weight:600;text-transform:uppercase;font-size:.8em}
 tr.anomaly .status{color:#b00}
@@ -143,7 +183,7 @@ tr.anomaly .status{color:#b00}
 <p class="muted">updated {{if .Updated.IsZero}}never{{else}}{{.Updated.Format "2006-01-02 15:04:05"}}{{end}}
  · every {{.Interval}} · {{.Users}} users · <b>{{.Anomalies}} anomalies</b> · <a href="/api/results">json</a></p>
 {{if .Err}}<div class="err">last collection failed: {{.Err}}</div>{{end}}
-<table><tr><th></th><th>user</th><th>metric</th><th>now</th><th>median</th><th>ratio</th><th>trend</th><th>samples</th><th>reason</th></tr>
+<table><tr>{{th . "status" "status"}}{{th . "user" "user"}}{{th . "metric" "metric"}}<th>now</th><th>median</th>{{th . "ratio" "ratio"}}<th>trend</th><th>samples</th><th>reason</th></tr>
 {{range .Rows}}<tr class="{{.Status}}">
 <td class="status">{{.Status}}</td>
 <td><a href="/?user={{.User}}">{{.User}}</a></td><td>{{.Metric}}</td>
