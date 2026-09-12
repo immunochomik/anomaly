@@ -72,7 +72,7 @@ func judge(v *verdict, m metric, cfg config) {
 		v.Reason = "zero now and in history"
 		return
 	case v.Median == 0:
-		v.Ratio = math.Inf(1)
+		v.Ratio = 0 // undefined; +Inf is not JSON-encodable
 		v.Anomaly = m.AlertIfNew
 		v.Reason = "data now, none in history (new traffic)"
 		return

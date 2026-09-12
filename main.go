@@ -77,12 +77,11 @@ func main() {
 func collectLoop(ctx context.Context, cfg config, c *ddClient, cache Cache, st *state) {
 	for {
 		verdicts, err := run(ctx, cfg, c, cache)
-		if err == nil && len(verdicts) > 0 {
-			err = putJSON(ctx, cache, runKey(cfg, verdicts[0].Window), verdicts)
-		}
 		st.set(verdicts, err)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "collect:", err)
+		} else if err := putJSON(ctx, cache, runKey(cfg, verdicts[0].Window), verdicts); err != nil {
+			fmt.Fprintln(os.Stderr, "store run:", err)
 		}
 		time.Sleep(cfg.Interval)
 	}
