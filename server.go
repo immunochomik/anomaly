@@ -100,6 +100,7 @@ type page struct {
 	Interval   time.Duration
 	Sort, Dir  string
 	UserQ      string
+	MetricQ    string
 	Window     time.Time // window shown
 	Live       bool      // showing latest run
 	Prev, Next string    // RFC3339 of neighbouring runs, "" if none
@@ -261,11 +262,11 @@ func (s *state) handlePage(w http.ResponseWriter, r *http.Request) {
 	p.Prev, p.Next = neighbours(keys, runKey(s.cfg, p.Window), len(runPrefix(s.cfg)))
 
 	p.Rows, p.Anomalies = s.rows(vs, p.Live)
-	if u := q.Get("user"); u != "" {
-		p.UserQ = u
+	p.UserQ, p.MetricQ = q.Get("user"), q.Get("metric")
+	if p.UserQ != "" || p.MetricQ != "" {
 		var rows []row
 		for _, x := range p.Rows {
-			if x.User == u {
+			if (p.UserQ == "" || x.User == p.UserQ) && (p.MetricQ == "" || x.Metric == p.MetricQ) {
 				rows = append(rows, x)
 			}
 		}
@@ -332,6 +333,31 @@ func (s *state) handleRuns(w http.ResponseWriter, r *http.Request) {
 	_ = runsTmpl.Execute(w, list)
 }
 
+// link builds a page URL preserving the current filters and viewed run, with overrides.
+func (p page) link(overrides map[string]string) string {
+	q := url.Values{}
+	set := func(k, v string) {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	set("user", p.UserQ)
+	set("metric", p.MetricQ)
+	set("sort", p.Sort)
+	set("dir", p.Dir)
+	if !p.Live {
+		set("at", p.Window.UTC().Format(time.RFC3339))
+	}
+	for k, v := range overrides {
+		q.Del(k)
+		set(k, v)
+	}
+	if len(q) == 0 {
+		return "/"
+	}
+	return "/?" + q.Encode()
+}
+
 var funcs = template.FuncMap{
 	"f":   func(x float64) string { return trimFloat(x) },
 	"ts":  func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
@@ -345,16 +371,13 @@ var funcs = template.FuncMap{
 				mark = " ▼"
 			}
 		}
-		u := "/?sort=" + key + "&dir=" + dir
-		if p.UserQ != "" {
-			u += "&user=" + template.URLQueryEscaper(p.UserQ)
-		}
-		if !p.Live {
-			u += "&at=" + template.URLQueryEscaper(p.Window.UTC().Format(time.RFC3339))
-		}
-		return template.HTML(`<th><a href="` + u + `">` + template.HTMLEscapeString(label) + mark + `</a></th>`)
+		u := p.link(map[string]string{"sort": key, "dir": dir})
+		return template.HTML(`<th><a href="` + template.HTMLEscapeString(u) + `">` + template.HTMLEscapeString(label) + mark + `</a></th>`)
 	},
-	"join": func(xs []string) string { return strings.Join(xs, ", ") },
+	"userLink":   func(p page, u string) string { return p.link(map[string]string{"user": u}) },
+	"metricLink": func(p page, m string) string { return p.link(map[string]string{"metric": m}) },
+	"clear":      func(p page) string { return p.link(map[string]string{"user": "", "metric": ""}) },
+	"join":       func(xs []string) string { return strings.Join(xs, ", ") },
 }
 
 const css = `<style>
@@ -380,6 +403,7 @@ var tmpl = template.Must(template.New("").Funcs(funcs).Parse(`<!doctype html>
 {{if .Prev}}<a href="/?at={{.Prev}}">← older</a>{{end}}
 {{if .Next}}<a href="/?at={{.Next}}">newer →</a>{{end}}
 {{if not .Live}}<a href="/">latest</a>{{end}}
+{{if or .UserQ .MetricQ}}<a href="{{clear .}}">clear filter{{if .UserQ}} user={{.UserQ}}{{end}}{{if .MetricQ}} metric={{.MetricQ}}{{end}}</a>{{end}}
 <a href="/runs">all runs ({{.RunCount}})</a>
 <a href="/api/results{{if not .Live}}?at={{ts .Window}}{{end}}">json</a>
 </p>
@@ -390,7 +414,7 @@ var tmpl = template.Must(template.New("").Funcs(funcs).Parse(`<!doctype html>
 <table><tr>{{th . "status" "status"}}{{th . "user" "user"}}{{th . "metric" "metric"}}<th>now</th><th>median</th>{{th . "ratio" "ratio"}}{{if .Live}}<th>trend</th>{{end}}<th>samples</th><th>reason</th><th></th></tr>
 {{range .Rows}}<tr class="{{.Status}}">
 <td class="status">{{.Status}}</td>
-<td><a href="/?user={{.User}}{{if not $.Live}}&at={{ts $.Window}}{{end}}">{{.User}}</a></td><td>{{.Metric}}</td>
+<td><a href="{{userLink $ .User}}">{{.User}}</a></td><td><a href="{{metricLink $ .Metric}}">{{.Metric}}</a></td>
 <td>{{f .Now}}</td><td>{{f .Median}}</td><td>{{f .Ratio}}</td>
 {{if $.Live}}<td class="trend">{{.Trend}}</td>{{end}}
 <td class="muted">{{range .Samples}}{{f .}} {{end}}</td>

@@ -43,6 +43,14 @@ func TestPageHistoryNavigation(t *testing.T) {
 	if !strings.Contains(body, "https://app.datadoghq.eu/logs?query=sm-env%3Aprod-rt%20%40userid%3Au1%20%40msg%3A%28SESSION_CONFIG%29&amp;from_ts=") {
 		t.Fatalf("missing DD logs link:\n%s", body)
 	}
+	body = get(t, srv, "/?metric=other")
+	if strings.Contains(body, `class="anomaly"`) || strings.Contains(body, `class="ok"`) {
+		t.Fatalf("metric filter should hide all rows:\n%s", body)
+	}
+	body = get(t, srv, "/?metric=m&user=u1&sort=ratio")
+	if !strings.Contains(body, `<td>m</td>`) && !strings.Contains(body, `>m</a></td>`) {
+		t.Fatalf("metric+user filter should keep row:\n%s", body)
+	}
 	body = get(t, srv, "/runs")
 	if strings.Count(body, "/?at=") != 2 {
 		t.Fatalf("runs page should list 2 runs:\n%s", body)
