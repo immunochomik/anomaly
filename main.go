@@ -49,7 +49,7 @@ func main() {
 		if err := st.loadHistory(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "load history:", err)
 		}
-		go collectLoop(ctx, cfg, c, cache, st)
+		go collectLoop(ctx, newCollector(cfg, c, cache), st)
 		fmt.Fprintf(os.Stderr, "listening on %s\n", *addr)
 		if err := http.ListenAndServe(*addr, newServer(st)); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -58,15 +58,10 @@ func main() {
 		return
 	}
 
-	users, err := resolveUsers(ctx, cfg, c, nil, time.Time{})
+	col := newCollector(cfg, c, cache)
+	verdicts, err := col.collect(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	verdicts, err := run(ctx, cfg, users, c, cache)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
 	}
 	anomalies := 0
 	for _, v := range verdicts {
@@ -75,46 +70,81 @@ func main() {
 			anomalies++
 		}
 	}
-	if anomalies > 0 {
+	if anomalies > 0 || err != nil {
 		os.Exit(1)
 	}
 }
 
-func collectLoop(ctx context.Context, cfg config, c *ddClient, cache Cache, st *state) {
-	var users []string
-	var refreshed time.Time
+type collector struct {
+	cfg       config
+	c         *ddClient
+	cache     Cache
+	users     map[string][]string // per scope
+	refreshed map[string]time.Time
+}
+
+func newCollector(cfg config, c *ddClient, cache Cache) *collector {
+	return &collector{cfg: cfg, c: c, cache: cache, users: map[string][]string{}, refreshed: map[string]time.Time{}}
+}
+
+func collectLoop(ctx context.Context, col *collector, st *state) {
 	for {
-		u, err := resolveUsers(ctx, cfg, c, users, refreshed)
-		if err == nil {
-			if len(u) > 0 && !equalStrings(u, users) {
-				fmt.Fprintf(os.Stderr, "users: %s\n", strings.Join(u, ","))
-			}
-			users, refreshed = u, time.Now()
-			st.setUsers(users)
-		}
-		var verdicts []verdict
-		if err == nil {
-			verdicts, err = run(ctx, cfg, users, c, cache)
-		}
+		verdicts, err := col.collect(ctx)
 		st.set(verdicts, err)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "collect:", err)
-		} else if err := putJSON(ctx, cache, runKey(cfg, verdicts[0].Window), verdicts); err != nil {
-			fmt.Fprintln(os.Stderr, "store run:", err)
 		}
-		time.Sleep(cfg.Interval)
+		if len(verdicts) > 0 {
+			if err := putJSON(ctx, col.cache, runKey(col.cfg, verdicts[0].Window), verdicts); err != nil {
+				fmt.Fprintln(os.Stderr, "store run:", err)
+			}
+		}
+		time.Sleep(col.cfg.Interval)
 	}
 }
 
-// resolveUsers returns the static list, or refreshes the top-users list when stale.
-func resolveUsers(ctx context.Context, cfg config, c *ddClient, current []string, refreshed time.Time) ([]string, error) {
-	if len(cfg.Users) > 0 {
-		return cfg.Users, nil
+// collect runs every scope; a failing scope is reported but does not block the others.
+func (col *collector) collect(ctx context.Context) ([]verdict, error) {
+	var all []verdict
+	var errs []string
+	for _, name := range col.cfg.scopeNames() {
+		scfg := col.cfg.scoped(name)
+		users, err := col.resolveUsers(ctx, scfg, name)
+		if err == nil {
+			var vs []verdict
+			vs, err = run(ctx, scfg, users, col.c, col.cache)
+			for i := range vs {
+				vs[i].Scope = name
+			}
+			all = append(all, vs...)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("scope %q: %v", name, err))
+		}
 	}
-	if len(current) > 0 && time.Since(refreshed) < cfg.TopUsers.Refresh {
-		return current, nil
+	if len(errs) > 0 {
+		return all, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
-	return c.topUsers(ctx, cfg, time.Now().UTC())
+	return all, nil
+}
+
+// resolveUsers returns the static list, or refreshes the scope's top-users list when stale.
+func (col *collector) resolveUsers(ctx context.Context, scfg config, scope string) ([]string, error) {
+	if len(scfg.Users) > 0 {
+		return scfg.Users, nil
+	}
+	if cur := col.users[scope]; len(cur) > 0 && time.Since(col.refreshed[scope]) < scfg.TopUsers.Refresh {
+		return cur, nil
+	}
+	u, err := col.c.topUsers(ctx, scfg, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if !equalStrings(u, col.users[scope]) {
+		fmt.Fprintf(os.Stderr, "users[%s]: %s\n", scope, strings.Join(u, ","))
+	}
+	col.users[scope], col.refreshed[scope] = u, time.Now()
+	return u, nil
 }
 
 func equalStrings(a, b []string) bool {

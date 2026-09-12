@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,20 +14,21 @@ import (
 )
 
 type config struct {
-	Users          []string      `yaml:"users"` // static list; if empty, TopUsers discovery is used
-	TopUsers       topUsers      `yaml:"top_users"`
-	UserFacet      string        `yaml:"user_facet"`
-	BaseQuery      string        `yaml:"base_query"`
-	Window         time.Duration `yaml:"window"`
-	Lag            time.Duration `yaml:"lag"`      // ingestion lag; window ends this long before now
-	Interval       time.Duration `yaml:"interval"` // collection period in -serve mode
-	Weeks          int           `yaml:"weeks"`
-	WeekdaySamples int           `yaml:"weekday_samples"` // previous weekdays used on Mon-Fri
-	MinSamplesMAD  int           `yaml:"min_samples_mad"`
-	MadK           float64       `yaml:"mad_k"`
-	Gap            time.Duration `yaml:"gap"`
-	Cache          cacheConfig   `yaml:"cache"`
-	Metrics        []metric      `yaml:"metrics"`
+	Users          []string          `yaml:"users"` // static list; if empty, TopUsers discovery is used
+	TopUsers       topUsers          `yaml:"top_users"`
+	UserFacet      string            `yaml:"user_facet"`
+	BaseQuery      string            `yaml:"base_query"`
+	Scopes         map[string]string `yaml:"scopes"` // name -> query fragment (env/region); empty = single scope
+	Window         time.Duration     `yaml:"window"`
+	Lag            time.Duration     `yaml:"lag"`      // ingestion lag; window ends this long before now
+	Interval       time.Duration     `yaml:"interval"` // collection period in -serve mode
+	Weeks          int               `yaml:"weeks"`
+	WeekdaySamples int               `yaml:"weekday_samples"` // previous weekdays used on Mon-Fri
+	MinSamplesMAD  int               `yaml:"min_samples_mad"`
+	MadK           float64           `yaml:"mad_k"`
+	Gap            time.Duration     `yaml:"gap"`
+	Cache          cacheConfig       `yaml:"cache"`
+	Metrics        []metric          `yaml:"metrics"`
 
 	hash string
 }
@@ -132,8 +134,30 @@ func loadConfig(path string) (config, error) {
 			m.High = 2.0
 		}
 	}
+	if len(cfg.Scopes) == 0 {
+		cfg.Scopes = map[string]string{"": ""}
+	}
 	cfg.hash = configHash(cfg)
 	return cfg, nil
+}
+
+func (cfg config) scopeNames() []string {
+	names := make([]string, 0, len(cfg.Scopes))
+	for n := range cfg.Scopes {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// scoped returns a copy whose base query and cache hash include the scope's query fragment.
+func (cfg config) scoped(name string) config {
+	c := cfg
+	if q := cfg.Scopes[name]; q != "" {
+		c.BaseQuery = strings.TrimSpace(cfg.BaseQuery + " " + q)
+		c.hash = configHash(c)
+	}
+	return c
 }
 
 // configHash keys the cache; anything that changes fetched values must be in it.

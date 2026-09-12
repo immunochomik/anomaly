@@ -11,14 +11,17 @@ import (
 
 func TestPageHistoryNavigation(t *testing.T) {
 	cfg := config{Users: []string{"u1"}, Window: 10 * time.Minute, Interval: 10 * time.Minute, hash: "abc",
-		UserFacet: "@userid", BaseQuery: "sm-env:prod-rt",
+		UserFacet: "@userid", BaseQuery: "sm-env:prod-rt", Scopes: map[string]string{"usa": "sm-region:usa", "eu": "sm-region:eu"},
 		Metrics: []metric{{Name: "m", Match: map[string][]string{"@msg": {"SESSION_CONFIG"}}}}}
 	cache := &memCache{m: map[string][]byte{}}
 	ctx := context.Background()
 	w1 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
 	w2 := w1.Add(10 * time.Minute)
 	seed := func(w time.Time, anomaly bool) {
-		vs := []verdict{{User: "u1", Metric: "m", Window: w, Ratio: 1, Anomaly: anomaly, Reason: "x"}}
+		vs := []verdict{
+			{Scope: "usa", User: "u1", Metric: "m", Window: w, Ratio: 1, Anomaly: anomaly, Reason: "x"},
+			{Scope: "eu", User: "u1", Metric: "m", Window: w, Ratio: 1, Reason: "y"},
+		}
 		if err := putJSON(ctx, cache, runKey(cfg, w), vs); err != nil {
 			t.Fatal(err)
 		}
@@ -40,7 +43,7 @@ func TestPageHistoryNavigation(t *testing.T) {
 	if !strings.Contains(body, "/?at=2026-09-12T10%3a10%3a00Z") || !strings.Contains(body, `class="anomaly"`) {
 		t.Fatalf("older page should link to newer run and show anomaly:\n%s", body)
 	}
-	if !strings.Contains(body, "https://app.datadoghq.eu/logs?query=sm-env%3Aprod-rt%20%40userid%3Au1%20%40msg%3A%28SESSION_CONFIG%29&amp;from_ts=") {
+	if !strings.Contains(body, "https://app.datadoghq.eu/logs?query=sm-env%3Aprod-rt%20sm-region%3Ausa%20%40userid%3Au1%20%40msg%3A%28SESSION_CONFIG%29&amp;from_ts=") {
 		t.Fatalf("missing DD logs link:\n%s", body)
 	}
 	body = get(t, srv, "/?metric=other")
@@ -50,6 +53,10 @@ func TestPageHistoryNavigation(t *testing.T) {
 	body = get(t, srv, "/?metric=m&user=u1&sort=ratio")
 	if !strings.Contains(body, `<td>m</td>`) && !strings.Contains(body, `>m</a></td>`) {
 		t.Fatalf("metric+user filter should keep row:\n%s", body)
+	}
+	body = get(t, srv, "/?scope=eu&at=2026-09-12T10:00:00Z")
+	if strings.Contains(body, `class="anomaly"`) || !strings.Contains(body, `<b>eu</b>`) {
+		t.Fatalf("scope filter should hide usa anomaly and mark eu active:\n%s", body)
 	}
 	body = get(t, srv, "/runs")
 	if strings.Count(body, "/?at=") != 2 {

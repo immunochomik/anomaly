@@ -1,12 +1,16 @@
 # Users: static `users` list or USERS env wins; otherwise top_users discovery (default).
-# SM_REGION env appends sm-region:<value> to base_query.
+# SM_REGION env appends sm-region:<value> to base_query (single-scope use).
 # users: [tomaszs]
 top_users:
   count: 20
   match: {"@msg": [SESSION_CONFIG]}
   refresh: 24h
 user_facet: "@userid"
-base_query: "sm-env:prod-rt service:proxy-service"
+base_query: "service:proxy-service"
+# Each scope is collected separately and is a filter in the web UI.
+scopes:
+  prod-rt/usa: "sm-env:prod-rt sm-region:usa"
+  prod-rt/eu: "sm-env:prod-rt sm-region:eu"
 window: 10m
 lag: 1m
 interval: 10m       # collection period in -serve mode

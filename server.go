@@ -23,7 +23,6 @@ type state struct {
 	site  string // DD site for explorer links
 
 	mu       sync.RWMutex
-	users    []string
 	verdicts []verdict
 	err      error
 	updated  time.Time
@@ -53,22 +52,16 @@ func (s *state) loadHistory(ctx context.Context) error {
 	return nil
 }
 
-func (s *state) setUsers(users []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.users = users
-}
-
 func (s *state) set(vs []verdict, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.err, s.updated = err, time.Now()
-	if err != nil {
+	if len(vs) == 0 {
 		return
 	}
 	s.verdicts = vs
 	for _, v := range vs {
-		k := v.User + "|" + v.Metric
+		k := v.Scope + "|" + v.User + "|" + v.Metric
 		t := append(s.trend[k], v.Ratio)
 		if len(t) > trendLen {
 			t = t[len(t)-trendLen:]
@@ -83,19 +76,19 @@ func (s *state) latest() ([]verdict, error, time.Time) {
 	return s.verdicts, s.err, s.updated
 }
 
-func (s *state) trendFor(user, metric string) []float64 {
+func (s *state) trendFor(scope, user, metric string) []float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.trend[user+"|"+metric]
+	return s.trend[scope+"|"+user+"|"+metric]
 }
 
 type row struct {
-	Status, User, Metric, Reason, Trend string
-	DDLink                              string
-	Now, Median, Ratio                  float64
-	Samples                             []float64
-	Window                              time.Time
-	Anomaly                             bool
+	Status, Scope, User, Metric, Reason, Trend string
+	DDLink                                     string
+	Now, Median, Ratio                         float64
+	Samples                                    []float64
+	Window                                     time.Time
+	Anomaly                                    bool
 }
 
 type page struct {
@@ -108,6 +101,8 @@ type page struct {
 	Sort, Dir  string
 	UserQ      string
 	MetricQ    string
+	ScopeQ     string
+	Scopes     []string  // all configured scopes, for the filter links
 	Window     time.Time // window shown
 	Live       bool      // showing latest run
 	Prev, Next string    // RFC3339 of neighbouring runs, "" if none
@@ -128,14 +123,14 @@ func (s *state) rows(vs []verdict, withTrend bool) ([]row, int) {
 	var rows []row
 	anomalies := 0
 	for _, v := range vs {
-		r := row{User: v.User, Metric: v.Metric, Reason: v.Reason, Now: v.Current, Median: v.Median,
+		r := row{Scope: v.Scope, User: v.User, Metric: v.Metric, Reason: v.Reason, Now: v.Current, Median: v.Median,
 			Ratio: v.Ratio, Samples: v.Samples, Window: v.Window, Anomaly: v.Anomaly, Status: "ok"}
 		if v.Anomaly {
 			r.Status = "anomaly"
 			anomalies++
 		}
 		if withTrend {
-			r.Trend = sparkline(s.trendFor(v.User, v.Metric))
+			r.Trend = sparkline(s.trendFor(v.Scope, v.User, v.Metric))
 		}
 		r.DDLink = s.ddLogsURL(v)
 		rows = append(rows, r)
@@ -154,7 +149,7 @@ func (s *state) ddLogsURL(v verdict) string {
 	if m == nil || v.Window.IsZero() {
 		return ""
 	}
-	q := strings.TrimSpace(s.cfg.BaseQuery + " " + s.cfg.UserFacet + ":" + v.User + " " + matchQuery(m.Match))
+	q := strings.TrimSpace(s.cfg.scoped(v.Scope).BaseQuery + " " + s.cfg.UserFacet + ":" + v.User + " " + matchQuery(m.Match))
 	site := s.site
 	if site == "" {
 		site = "datadoghq.com"
@@ -171,6 +166,8 @@ func (s *state) ddLogsURL(v verdict) string {
 func sortRows(rows []row, key, dir string) {
 	less := func(a, b row) bool {
 		switch key {
+		case "scope":
+			return a.Scope < b.Scope
 		case "user":
 			return a.User < b.User
 		case "metric":
@@ -239,9 +236,10 @@ func (*notFound) Error() string { return "run not found" }
 func (s *state) handlePage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
-	s.mu.RLock()
-	p := page{Interval: s.cfg.Interval, Users: len(s.users), Live: true}
-	s.mu.RUnlock()
+	p := page{Interval: s.cfg.Interval, Live: true, Scopes: s.cfg.scopeNames()}
+	if len(p.Scopes) == 1 && p.Scopes[0] == "" {
+		p.Scopes = nil
+	}
 
 	keys, err := s.cache.Keys(ctx, runPrefix(s.cfg))
 	if err != nil {
@@ -271,16 +269,25 @@ func (s *state) handlePage(w http.ResponseWriter, r *http.Request) {
 	p.Prev, p.Next = neighbours(keys, runKey(s.cfg, p.Window), len(runPrefix(s.cfg)))
 
 	p.Rows, p.Anomalies = s.rows(vs, p.Live)
-	p.UserQ, p.MetricQ = q.Get("user"), q.Get("metric")
-	if p.UserQ != "" || p.MetricQ != "" {
+	p.UserQ, p.MetricQ, p.ScopeQ = q.Get("user"), q.Get("metric"), q.Get("scope")
+	if p.UserQ != "" || p.MetricQ != "" || p.ScopeQ != "" {
 		var rows []row
 		for _, x := range p.Rows {
-			if (p.UserQ == "" || x.User == p.UserQ) && (p.MetricQ == "" || x.Metric == p.MetricQ) {
+			if (p.UserQ == "" || x.User == p.UserQ) && (p.MetricQ == "" || x.Metric == p.MetricQ) && (p.ScopeQ == "" || x.Scope == p.ScopeQ) {
 				rows = append(rows, x)
 			}
 		}
 		p.Rows = rows
 	}
+	seen := map[string]bool{}
+	p.Anomalies = 0
+	for _, x := range p.Rows {
+		seen[x.Scope+"|"+x.User] = true
+		if x.Anomaly {
+			p.Anomalies++
+		}
+	}
+	p.Users = len(seen)
 	p.Sort, p.Dir = q.Get("sort"), q.Get("dir")
 	// Default: anomalies first, then user, then metric. Explicit sort applies on top of that.
 	sortRows(p.Rows, "metric", "asc")
@@ -352,6 +359,7 @@ func (p page) link(overrides map[string]string) string {
 	}
 	set("user", p.UserQ)
 	set("metric", p.MetricQ)
+	set("scope", p.ScopeQ)
 	set("sort", p.Sort)
 	set("dir", p.Dir)
 	if !p.Live {
@@ -385,7 +393,8 @@ var funcs = template.FuncMap{
 	},
 	"userLink":   func(p page, u string) string { return p.link(map[string]string{"user": u}) },
 	"metricLink": func(p page, m string) string { return p.link(map[string]string{"metric": m}) },
-	"clear":      func(p page) string { return p.link(map[string]string{"user": "", "metric": ""}) },
+	"scopeLink":  func(p page, sc string) string { return p.link(map[string]string{"scope": sc}) },
+	"clear":      func(p page) string { return p.link(map[string]string{"user": "", "metric": "", "scope": ""}) },
 	"join":       func(xs []string) string { return strings.Join(xs, ", ") },
 }
 
@@ -412,24 +421,26 @@ var tmpl = template.Must(template.New("").Funcs(funcs).Parse(`<!doctype html>
 {{if .Prev}}<a href="/?at={{.Prev}}">← older</a>{{end}}
 {{if .Next}}<a href="/?at={{.Next}}">newer →</a>{{end}}
 {{if not .Live}}<a href="/">latest</a>{{end}}
-{{if or .UserQ .MetricQ}}<a href="{{clear .}}">clear filter{{if .UserQ}} user={{.UserQ}}{{end}}{{if .MetricQ}} metric={{.MetricQ}}{{end}}</a>{{end}}
+{{if or .UserQ .MetricQ .ScopeQ}}<a href="{{clear .}}">clear filter{{if .ScopeQ}} scope={{.ScopeQ}}{{end}}{{if .UserQ}} user={{.UserQ}}{{end}}{{if .MetricQ}} metric={{.MetricQ}}{{end}}</a>{{end}}
 <a href="/runs">all runs ({{.RunCount}})</a>
 <a href="/api/results{{if not .Live}}?at={{ts .Window}}{{end}}">json</a>
 </p>
 <p class="muted">window {{if .Window.IsZero}}-{{else}}{{fmt .Window}} UTC{{end}}
  · updated {{if .Updated.IsZero}}never{{else}}{{.Updated.Format "15:04:05"}}{{end}}
- · every {{.Interval}} · {{.Users}} users · <b>{{.Anomalies}} anomalies</b></p>
+ · every {{.Interval}} · {{.Users}} users · <b>{{.Anomalies}} anomalies</b>
+{{if .Scopes}} · scope: {{if .ScopeQ}}<a href="{{scopeLink . ""}}">all</a>{{else}}<b>all</b>{{end}}{{range .Scopes}} | {{if eq . $.ScopeQ}}<b>{{.}}</b>{{else}}<a href="{{scopeLink $ .}}">{{.}}</a>{{end}}{{end}}{{end}}</p>
 {{if .Err}}<div class="err">last collection failed: {{.Err}}</div>{{end}}
-<table><tr>{{th . "status" "status"}}{{th . "user" "user"}}{{th . "metric" "metric"}}<th>now</th><th>median</th>{{th . "ratio" "ratio"}}{{if .Live}}<th>trend</th>{{end}}<th>samples</th><th>reason</th><th></th></tr>
+<table><tr>{{th . "status" "status"}}{{if .Scopes}}{{th . "scope" "scope"}}{{end}}{{th . "user" "user"}}{{th . "metric" "metric"}}<th>now</th><th>median</th>{{th . "ratio" "ratio"}}{{if .Live}}<th>trend</th>{{end}}<th>samples</th><th>reason</th><th></th></tr>
 {{range .Rows}}<tr class="{{.Status}}">
 <td class="status">{{.Status}}</td>
+{{if $.Scopes}}<td><a href="{{scopeLink $ .Scope}}">{{.Scope}}</a></td>{{end}}
 <td><a href="{{userLink $ .User}}">{{.User}}</a></td><td><a href="{{metricLink $ .Metric}}">{{.Metric}}</a></td>
 <td>{{f .Now}}</td><td>{{f .Median}}</td><td>{{f .Ratio}}</td>
 {{if $.Live}}<td class="trend">{{.Trend}}</td>{{end}}
 <td class="muted">{{range .Samples}}{{f .}} {{end}}</td>
 <td>{{.Reason}}</td>
 <td>{{if .DDLink}}<a href="{{.DDLink}}" target="_blank">logs ↗</a>{{end}}</td></tr>
-{{else}}<tr><td colspan="10" class="muted">no results yet</td></tr>{{end}}
+{{else}}<tr><td colspan="11" class="muted">no results yet</td></tr>{{end}}
 </table></body></html>`))
 
 var runsTmpl = template.Must(template.New("").Funcs(funcs).Parse(`<!doctype html>

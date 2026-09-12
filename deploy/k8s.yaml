@@ -15,11 +15,13 @@ metadata:
   namespace: anomaly
 data:
   DD_SITE: datadoghq.eu
-  SM_REGION: usa
   # USERS: a,b   # optional static list; default is top_users discovery
   config.yaml: |
     user_facet: "@userid"
-    base_query: "sm-env:prod-rt service:proxy-service"
+    base_query: "service:proxy-service"
+    scopes:
+      prod-rt/usa: "sm-env:prod-rt sm-region:usa"
+      prod-rt/eu: "sm-env:prod-rt sm-region:eu"
     window: 10m
     lag: 1m
     interval: 10m

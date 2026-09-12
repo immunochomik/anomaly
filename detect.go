@@ -9,6 +9,7 @@ import (
 )
 
 type verdict struct {
+	Scope      string    `json:"scope"`
 	User       string    `json:"user"`
 	Metric     string    `json:"metric"`
 	Window     time.Time `json:"window"`
@@ -108,8 +109,8 @@ func printVerdict(v verdict) {
 	if v.Anomaly {
 		status = "ANOMALY"
 	}
-	fmt.Printf("%s %-14s %-24s now=%.2f median=%.2f ratio=%.2f samples=[%s] (%s)\n",
-		status, v.User, v.Metric, v.Current, v.Median, v.Ratio, fmtSamples(v.Samples), v.Reason)
+	fmt.Printf("%s %-12s %-14s %-24s now=%.2f median=%.2f ratio=%.2f samples=[%s] (%s)\n",
+		status, v.Scope, v.User, v.Metric, v.Current, v.Median, v.Ratio, fmtSamples(v.Samples), v.Reason)
 }
 
 func fmtSamples(xs []float64) string {
