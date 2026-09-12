@@ -44,10 +44,13 @@ func main() {
 	defer cache.Close()
 
 	if *addr != "" {
-		st := newState()
+		st := newState(cfg, cache, c.site)
+		if err := st.loadHistory(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "load history:", err)
+		}
 		go collectLoop(ctx, cfg, c, cache, st)
 		fmt.Fprintf(os.Stderr, "listening on %s\n", *addr)
-		if err := http.ListenAndServe(*addr, newServer(st, cfg)); err != nil {
+		if err := http.ListenAndServe(*addr, newServer(st)); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -62,7 +65,7 @@ func main() {
 	anomalies := 0
 	for _, v := range verdicts {
 		printVerdict(v)
-		if v.anomaly {
+		if v.Anomaly {
 			anomalies++
 		}
 	}
@@ -74,6 +77,9 @@ func main() {
 func collectLoop(ctx context.Context, cfg config, c *ddClient, cache Cache, st *state) {
 	for {
 		verdicts, err := run(ctx, cfg, c, cache)
+		if err == nil && len(verdicts) > 0 {
+			err = putJSON(ctx, cache, runKey(cfg, verdicts[0].Window), verdicts)
+		}
 		st.set(verdicts, err)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "collect:", err)
@@ -104,10 +110,10 @@ func run(ctx context.Context, cfg config, c *ddClient, cache Cache) ([]verdict, 
 	var out []verdict
 	for _, m := range cfg.Metrics {
 		for _, u := range cfg.Users {
-			v := verdict{user: u, metric: m.Name}
-			v.current, v.hasCurrent = cur[m.Name][u]
-			if !v.hasCurrent && m.Aggregation == "count" {
-				v.current, v.hasCurrent = 0, true
+			v := verdict{User: u, Metric: m.Name}
+			v.Current, v.HasCurrent = cur[m.Name][u]
+			if !v.HasCurrent && m.Aggregation == "count" {
+				v.Current, v.HasCurrent = 0, true
 			}
 			for _, h := range hist {
 				x, ok := h[m.Name][u]
@@ -115,10 +121,10 @@ func run(ctx context.Context, cfg config, c *ddClient, cache Cache) ([]verdict, 
 					x, ok = 0, true
 				}
 				if ok {
-					v.samples = append(v.samples, x)
+					v.Samples = append(v.Samples, x)
 				}
 			}
-			v.window = from
+			v.Window = from
 			judge(&v, m, cfg)
 			out = append(out, v)
 		}
@@ -127,8 +133,9 @@ func run(ctx context.Context, cfg config, c *ddClient, cache Cache) ([]verdict, 
 }
 
 func getWindow(ctx context.Context, cfg config, c *ddClient, cache Cache, from time.Time) (windowValues, error) {
-	key := cacheKey(cfg, from)
-	if w, ok, err := cache.Get(ctx, key); err != nil {
+	key := windowKey(cfg, from)
+	var w windowValues
+	if ok, err := getJSON(ctx, cache, key, &w); err != nil {
 		return nil, fmt.Errorf("cache get: %w", err)
 	} else if ok {
 		return w, nil
@@ -137,7 +144,7 @@ func getWindow(ctx context.Context, cfg config, c *ddClient, cache Cache, from t
 	if err != nil {
 		return nil, err
 	}
-	if err := cache.Put(ctx, key, w); err != nil {
+	if err := putJSON(ctx, cache, key, w); err != nil {
 		return nil, fmt.Errorf("cache put: %w", err)
 	}
 	return w, nil

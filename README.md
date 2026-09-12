@@ -14,7 +14,9 @@ go run . -config config.yaml
 Exit code 1 if any anomaly. Run every 10 min (cron `*/10`) so windows line up with the cache.
 
 Web mode: `go run . -serve :8080` collects every `interval` in the background and serves a
-table at `/` (anomalies first, `?user=` filter, ratio trend) and JSON at `/api/results`.
+table at `/` (sortable, `?user=` filter, ratio trend, Datadog logs link per row) and JSON at
+`/api/results`. Each run is stored in the cache; `/runs` lists them, `/?at=<RFC3339>` shows one,
+and older/newer links step through history.
 
 ## How it works
 

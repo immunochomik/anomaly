@@ -38,14 +38,14 @@ func TestMatchQuery(t *testing.T) {
 func TestJudgeMAD(t *testing.T) {
 	cfg := config{MinSamplesMAD: 6, MadK: 3}
 	m := metric{Low: 0.5, High: 2}
-	v := verdict{current: 10, hasCurrent: true, samples: []float64{100, 110, 90, 105, 95, 100, 98}}
+	v := verdict{Current: 10, HasCurrent: true, Samples: []float64{100, 110, 90, 105, 95, 100, 98}}
 	judge(&v, m, cfg)
-	if !v.anomaly {
+	if !v.Anomaly {
 		t.Fatalf("expected anomaly: %+v", v)
 	}
-	v = verdict{current: 80, hasCurrent: true, samples: []float64{100, 110, 90, 105, 95, 100, 98}}
+	v = verdict{Current: 80, HasCurrent: true, Samples: []float64{100, 110, 90, 105, 95, 100, 98}}
 	judge(&v, m, cfg)
-	if v.anomaly {
+	if v.Anomaly {
 		t.Fatalf("unexpected anomaly: %+v", v)
 	}
 }

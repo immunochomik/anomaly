@@ -9,15 +9,16 @@ import (
 )
 
 type verdict struct {
-	user, metric string
-	window       time.Time
-	current      float64
-	hasCurrent   bool
-	samples      []float64
-	median       float64
-	ratio        float64
-	anomaly      bool
-	reason       string
+	User       string    `json:"user"`
+	Metric     string    `json:"metric"`
+	Window     time.Time `json:"window"`
+	Current    float64   `json:"current"`
+	HasCurrent bool      `json:"has_current"`
+	Samples    []float64 `json:"samples"`
+	Median     float64   `json:"median"`
+	Ratio      float64   `json:"ratio"`
+	Anomaly    bool      `json:"anomaly"`
+	Reason     string    `json:"reason"`
 }
 
 // sampleStarts returns history window starts: same weekday for past weeks, plus on Mon-Fri
@@ -52,63 +53,63 @@ func isWeekday(t time.Time) bool {
 }
 
 func judge(v *verdict, m metric, cfg config) {
-	if len(v.samples) == 0 {
-		v.reason = "no history"
+	if len(v.Samples) == 0 {
+		v.Reason = "no history"
 		return
 	}
-	if !v.hasCurrent {
-		v.anomaly = true
-		v.reason = "no data now, history present"
+	if !v.HasCurrent {
+		v.Anomaly = true
+		v.Reason = "no data now, history present"
 		return
 	}
-	v.median = median(v.samples)
+	v.Median = median(v.Samples)
 	switch {
-	case v.current < m.MinValue && v.median < m.MinValue:
-		v.ratio = v.current / math.Max(v.median, 1)
-		v.reason = fmt.Sprintf("below min_value %.0f, not judged", m.MinValue)
+	case v.Current < m.MinValue && v.Median < m.MinValue:
+		v.Ratio = v.Current / math.Max(v.Median, 1)
+		v.Reason = fmt.Sprintf("below min_value %.0f, not judged", m.MinValue)
 		return
-	case v.median == 0 && v.current == 0:
-		v.reason = "zero now and in history"
+	case v.Median == 0 && v.Current == 0:
+		v.Reason = "zero now and in history"
 		return
-	case v.median == 0:
-		v.ratio = math.Inf(1)
-		v.anomaly = m.AlertIfNew
-		v.reason = "data now, none in history (new traffic)"
+	case v.Median == 0:
+		v.Ratio = math.Inf(1)
+		v.Anomaly = m.AlertIfNew
+		v.Reason = "data now, none in history (new traffic)"
 		return
 	}
-	v.ratio = v.current / v.median
-	outsideRatio := v.ratio < m.Low || v.ratio > m.High
-	if len(v.samples) >= cfg.MinSamplesMAD {
-		mad := madScaled(v.samples, v.median)
-		dev := math.Abs(v.current - v.median)
+	v.Ratio = v.Current / v.Median
+	outsideRatio := v.Ratio < m.Low || v.Ratio > m.High
+	if len(v.Samples) >= cfg.MinSamplesMAD {
+		mad := madScaled(v.Samples, v.Median)
+		dev := math.Abs(v.Current - v.Median)
 		if outsideRatio && dev > cfg.MadK*mad {
-			v.anomaly = true
-			v.reason = fmt.Sprintf("%.1f MADs from median and outside ratio bounds", dev/math.Max(mad, 1e-9))
+			v.Anomaly = true
+			v.Reason = fmt.Sprintf("%.1f MADs from median and outside ratio bounds", dev/math.Max(mad, 1e-9))
 		} else {
-			v.reason = fmt.Sprintf("within range (mad=%.2f, n=%d)", mad, len(v.samples))
+			v.Reason = fmt.Sprintf("within range (mad=%.2f, n=%d)", mad, len(v.Samples))
 		}
 		return
 	}
-	lo, hi := minMax(v.samples)
+	lo, hi := minMax(v.Samples)
 	switch {
-	case v.ratio < m.Low && v.current < lo:
-		v.anomaly = true
-		v.reason = fmt.Sprintf("below %.0f%% of median and below historic min", m.Low*100)
-	case v.ratio > m.High && v.current > hi:
-		v.anomaly = true
-		v.reason = fmt.Sprintf("above %.0f%% of median and above historic max", m.High*100)
+	case v.Ratio < m.Low && v.Current < lo:
+		v.Anomaly = true
+		v.Reason = fmt.Sprintf("below %.0f%% of median and below historic min", m.Low*100)
+	case v.Ratio > m.High && v.Current > hi:
+		v.Anomaly = true
+		v.Reason = fmt.Sprintf("above %.0f%% of median and above historic max", m.High*100)
 	default:
-		v.reason = fmt.Sprintf("within range (n=%d)", len(v.samples))
+		v.Reason = fmt.Sprintf("within range (n=%d)", len(v.Samples))
 	}
 }
 
 func printVerdict(v verdict) {
 	status := "OK     "
-	if v.anomaly {
+	if v.Anomaly {
 		status = "ANOMALY"
 	}
 	fmt.Printf("%s %-14s %-24s now=%.2f median=%.2f ratio=%.2f samples=[%s] (%s)\n",
-		status, v.user, v.metric, v.current, v.median, v.ratio, fmtSamples(v.samples), v.reason)
+		status, v.User, v.Metric, v.Current, v.Median, v.Ratio, fmtSamples(v.Samples), v.Reason)
 }
 
 func fmtSamples(xs []float64) string {

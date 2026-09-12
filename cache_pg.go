@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -29,28 +28,37 @@ func newPgCache(ctx context.Context, dsn string) (*pgCache, error) {
 	return &pgCache{pool: pool}, nil
 }
 
-func (c *pgCache) Get(ctx context.Context, key string) (windowValues, bool, error) {
+func (c *pgCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	var raw []byte
 	err := c.pool.QueryRow(ctx, `SELECT value FROM anomaly_cache WHERE key = $1`, key).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
-	if err != nil {
-		return nil, false, err
-	}
-	var v windowValues
-	return v, true, json.Unmarshal(raw, &v)
+	return raw, err == nil, err
 }
 
-func (c *pgCache) Put(ctx context.Context, key string, v windowValues) error {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	_, err = c.pool.Exec(ctx,
+func (c *pgCache) Put(ctx context.Context, key string, v []byte) error {
+	_, err := c.pool.Exec(ctx,
 		`INSERT INTO anomaly_cache (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-		key, raw)
+		key, v)
 	return err
+}
+
+func (c *pgCache) Keys(ctx context.Context, prefix string) ([]string, error) {
+	rows, err := c.pool.Query(ctx, `SELECT key FROM anomaly_cache WHERE key LIKE $1 || '%' ORDER BY key DESC`, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
 }
 
 func (c *pgCache) Close() error { c.pool.Close(); return nil }
