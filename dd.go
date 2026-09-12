@@ -57,14 +57,39 @@ type aggregateResp struct {
 	} `json:"data"`
 }
 
-// fetchWindow does one aggregation call covering all users and metrics, grouped by user + match facets.
+// fetchWindow fetches all metrics for one window. Metrics sharing the same match facets go in
+// one call, grouped by user + those facets; facet limits equal the matched values, so bucket
+// counts stay small and exact.
 func (c *ddClient) fetchWindow(ctx context.Context, cfg config, from, to time.Time) (windowValues, error) {
-	facets := matchFacets(cfg.Metrics)
-	computes, idx := buildComputes(cfg.Metrics)
+	groups := map[string][]metric{}
+	var order []string
+	for _, m := range cfg.Metrics {
+		k := strings.Join(matchFacets([]metric{m}), ",")
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], m)
+	}
+	w := windowValues{}
+	for _, k := range order {
+		part, err := c.fetchGroup(ctx, cfg, groups[k], from, to)
+		if err != nil {
+			return nil, err
+		}
+		for name, users := range part {
+			w[name] = users
+		}
+	}
+	return w, nil
+}
+
+func (c *ddClient) fetchGroup(ctx context.Context, cfg config, metrics []metric, from, to time.Time) (windowValues, error) {
+	facets := matchFacets(metrics)
+	computes, idx := buildComputes(metrics)
 	countIdx := idx["count|"]
 
 	var parts []string
-	for _, m := range cfg.Metrics {
+	for _, m := range metrics {
 		parts = append(parts, "("+matchQuery(m.Match)+")")
 	}
 	query := fmt.Sprintf("%s %s:(%s) (%s)", cfg.BaseQuery, cfg.UserFacet,
@@ -72,7 +97,7 @@ func (c *ddClient) fetchWindow(ctx context.Context, cfg config, from, to time.Ti
 
 	gb := []groupBy{{Facet: cfg.UserFacet, Limit: len(cfg.Users)}}
 	for _, f := range facets {
-		gb = append(gb, groupBy{Facet: f, Limit: 50})
+		gb = append(gb, groupBy{Facet: f, Limit: facetValues(metrics, f)})
 	}
 	body, err := json.Marshal(aggregateReq{
 		Filter:  filter{Query: strings.TrimSpace(query), From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Indexes: []string{"*"}},
@@ -93,13 +118,13 @@ func (c *ddClient) fetchWindow(ctx context.Context, cfg config, from, to time.Ti
 
 	type acc struct{ sum, weight float64 }
 	accs := map[string]map[string]*acc{}
-	for _, m := range cfg.Metrics {
+	for _, m := range metrics {
 		accs[m.Name] = map[string]*acc{}
 	}
 	for _, b := range out.Data.Buckets {
 		user := b.By[cfg.UserFacet]
 		cnt := computeValue(b.Computes, countIdx)
-		for _, m := range cfg.Metrics {
+		for _, m := range metrics {
 			if !bucketMatches(b.By, m.Match) {
 				continue
 			}
@@ -129,6 +154,17 @@ func (c *ddClient) fetchWindow(ctx context.Context, cfg config, from, to time.Ti
 		}
 	}
 	return w, nil
+}
+
+// facetValues counts distinct matched values of a facet across metrics (case-insensitive).
+func facetValues(ms []metric, facet string) int {
+	set := map[string]bool{}
+	for _, m := range ms {
+		for _, v := range m.Match[facet] {
+			set[strings.ToLower(v)] = true
+		}
+	}
+	return len(set)
 }
 
 func matchFacets(ms []metric) []string {
