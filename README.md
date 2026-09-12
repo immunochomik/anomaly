@@ -16,7 +16,8 @@ Exit code 1 if any anomaly. Run every 10 min (cron `*/10`) so windows line up wi
 Web mode: `go run . -serve :8080` collects every `interval` in the background and serves a
 table at `/` (sortable, `?user=` filter, ratio trend, Datadog logs link per row) and JSON at
 `/api/results`. Each run is stored in the cache; `/runs` lists them, `/?at=<RFC3339>` shows one,
-and older/newer links step through history.
+and older/newer links step through history. `/users` shows the discovery query and the top 50
+users with counts per scope, marking which are monitored.
 
 ## How it works
 

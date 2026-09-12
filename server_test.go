@@ -67,6 +67,21 @@ func TestPageHistoryNavigation(t *testing.T) {
 	}
 }
 
+func TestUsersPage(t *testing.T) {
+	cfg := config{Weeks: 4, Scopes: map[string]string{"usa": "sm-region:usa"}}
+	st := newState(cfg, &memCache{m: map[string][]byte{}}, "")
+	srv := newServer(st)
+	if body := get(t, srv, "/users"); !strings.Contains(body, "no discovery yet") {
+		t.Fatalf("empty users page:\n%s", body)
+	}
+	st.setDiscovery("usa", discovery{Query: "q", At: time.Now(), Used: 1,
+		Users: []userCount{{User: "big", Count: 100}, {User: "small", Count: 3}}})
+	body := get(t, srv, "/users")
+	if !strings.Contains(body, ">big</a></td><td>100</td>") || !strings.Contains(body, "outside top 1") {
+		t.Fatalf("users page:\n%s", body)
+	}
+}
+
 func get(t *testing.T, h http.Handler, url string) string {
 	t.Helper()
 	rec := do(h, url)

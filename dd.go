@@ -156,29 +156,36 @@ func (c *ddClient) fetchGroup(ctx context.Context, cfg config, users []string, m
 	return w, nil
 }
 
-// topUsers returns the most active users over the sampling range by TopUsers.Match count.
-func (c *ddClient) topUsers(ctx context.Context, cfg config, now time.Time) ([]string, error) {
+type userCount struct {
+	User  string  `json:"user"`
+	Count float64 `json:"count"`
+}
+
+// topUsers returns users by TopUsers.Match count over the sampling range, most active first.
+// It fetches more than needed so the debug page can show who fell outside the cut.
+func (c *ddClient) topUsers(ctx context.Context, cfg config, now time.Time) ([]userCount, string, error) {
 	from := now.AddDate(0, 0, -7*cfg.Weeks)
 	query := strings.TrimSpace(cfg.BaseQuery + " " + matchQuery(cfg.TopUsers.Match))
 	out, err := c.aggregate(ctx, aggregateReq{
 		Filter:  filter{Query: query, From: from.Format(time.RFC3339), To: now.Format(time.RFC3339), Indexes: []string{"*"}},
 		Compute: []compute{{Aggregation: "count", Type: "total"}},
-		GroupBy: []groupBy{{Facet: cfg.UserFacet, Limit: cfg.TopUsers.Count,
+		GroupBy: []groupBy{{Facet: cfg.UserFacet, Limit: max(cfg.TopUsers.Count, 50),
 			Sort: &groupSort{Type: "measure", Aggregation: "count", Order: "desc"}}},
 	})
 	if err != nil {
-		return nil, err
+		return nil, query, err
 	}
-	var users []string
+	var users []userCount
 	for _, b := range out.Data.Buckets {
 		if u := b.By[cfg.UserFacet]; u != "" {
-			users = append(users, u)
+			users = append(users, userCount{User: u, Count: computeValue(b.Computes, 0)})
 		}
 	}
+	sort.SliceStable(users, func(i, j int) bool { return users[i].Count > users[j].Count })
 	if len(users) == 0 {
-		return nil, fmt.Errorf("top users: no users found for %q", query)
+		return nil, query, fmt.Errorf("top users: no users found for %q", query)
 	}
-	return users, nil
+	return users, query, nil
 }
 
 func (c *ddClient) aggregate(ctx context.Context, req aggregateReq) (aggregateResp, error) {

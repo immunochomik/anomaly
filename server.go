@@ -22,15 +22,16 @@ type state struct {
 	cache Cache
 	site  string // DD site for explorer links
 
-	mu       sync.RWMutex
-	verdicts []verdict
-	err      error
-	updated  time.Time
-	trend    map[string][]float64 // user|metric -> recent ratios
+	mu        sync.RWMutex
+	verdicts  []verdict
+	discovery map[string]discovery // per scope
+	err       error
+	updated   time.Time
+	trend     map[string][]float64 // user|metric -> recent ratios
 }
 
 func newState(cfg config, cache Cache, site string) *state {
-	return &state{cfg: cfg, cache: cache, site: site, trend: map[string][]float64{}}
+	return &state{cfg: cfg, cache: cache, site: site, trend: map[string][]float64{}, discovery: map[string]discovery{}}
 }
 
 // loadHistory seeds latest verdicts and trend from stored runs.
@@ -50,6 +51,12 @@ func (s *state) loadHistory(ctx context.Context) error {
 		s.set(vs, nil)
 	}
 	return nil
+}
+
+func (s *state) setDiscovery(scope string, d discovery) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discovery[scope] = d
 }
 
 func (s *state) set(vs []verdict, err error) {
@@ -202,6 +209,7 @@ func newServer(st *state) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", st.handlePage)
 	mux.HandleFunc("GET /runs", st.handleRuns)
+	mux.HandleFunc("GET /users", st.handleUsers)
 	mux.HandleFunc("GET /api/results", func(w http.ResponseWriter, r *http.Request) {
 		vs, err, _ := st.latest()
 		if at := r.URL.Query().Get("at"); at != "" {
@@ -316,6 +324,30 @@ func neighbours(keys []string, key string, prefixLen int) (prev, next string) {
 	return prev, next
 }
 
+type usersPage struct {
+	Scopes []scopeUsers
+	Static []string
+	Weeks  int
+}
+
+type scopeUsers struct {
+	Name string
+	discovery
+}
+
+func (s *state) handleUsers(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	p := usersPage{Static: s.cfg.Users, Weeks: s.cfg.Weeks}
+	for _, name := range s.cfg.scopeNames() {
+		if d, ok := s.discovery[name]; ok {
+			p.Scopes = append(p.Scopes, scopeUsers{Name: name, discovery: d})
+		}
+	}
+	s.mu.RUnlock()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = usersTmpl.Execute(w, p)
+}
+
 func (s *state) handleRuns(w http.ResponseWriter, r *http.Request) {
 	keys, err := s.cache.Keys(r.Context(), runPrefix(s.cfg))
 	if err != nil {
@@ -396,6 +428,7 @@ var funcs = template.FuncMap{
 	"scopeLink":  func(p page, sc string) string { return p.link(map[string]string{"scope": sc}) },
 	"clear":      func(p page) string { return p.link(map[string]string{"user": "", "metric": "", "scope": ""}) },
 	"join":       func(xs []string) string { return strings.Join(xs, ", ") },
+	"inc":        func(i int) int { return i + 1 },
 }
 
 const css = `<style>
@@ -423,6 +456,7 @@ var tmpl = template.Must(template.New("").Funcs(funcs).Parse(`<!doctype html>
 {{if not .Live}}<a href="/">latest</a>{{end}}
 {{if or .UserQ .MetricQ .ScopeQ}}<a href="{{clear .}}">clear filter{{if .ScopeQ}} scope={{.ScopeQ}}{{end}}{{if .UserQ}} user={{.UserQ}}{{end}}{{if .MetricQ}} metric={{.MetricQ}}{{end}}</a>{{end}}
 <a href="/runs">all runs ({{.RunCount}})</a>
+<a href="/users">users</a>
 <a href="/api/results{{if not .Live}}?at={{ts .Window}}{{end}}">json</a>
 </p>
 <p class="muted">window {{if .Window.IsZero}}-{{else}}{{fmt .Window}} UTC{{end}}
@@ -451,6 +485,21 @@ var runsTmpl = template.Must(template.New("").Funcs(funcs).Parse(`<!doctype html
 <td><a href="/?at={{ts .Window}}">{{fmt .Window}}</a></td><td>{{.Anomalies}}</td><td>{{join .Users}}</td></tr>
 {{else}}<tr><td colspan="3" class="muted">no runs stored</td></tr>{{end}}
 </table></body></html>`))
+
+var usersTmpl = template.Must(template.New("").Funcs(funcs).Parse(`<!doctype html>
+<html><head><meta charset="utf-8"><title>anomaly users</title>` + css + `</head><body>
+<h2>Users</h2><p class="nav"><a href="/">latest</a></p>
+{{if .Static}}<p>static list from config/USERS: {{join .Static}}</p>{{end}}
+{{range $s := .Scopes}}
+<h3>{{if $s.Name}}{{$s.Name}}{{else}}default scope{{end}} <span class="muted">· discovered {{$s.At.Format "2006-01-02 15:04"}} · top {{$s.Used}} monitored</span></h3>
+<p class="muted">query: <code>{{$s.Query}}</code> (last {{$.Weeks}} weeks, grouped by userid)</p>
+<table><tr><th>#</th><th>user</th><th>count</th><th></th></tr>
+{{range $i, $u := $s.Users}}<tr class="{{if lt $i $s.Used}}ok{{else}}muted{{end}}">
+<td>{{inc $i}}</td><td><a href="/?user={{$u.User}}&scope={{$s.Name}}">{{$u.User}}</a></td><td>{{f $u.Count}}</td>
+<td>{{if lt $i $s.Used}}monitored{{else}}<span class="muted">outside top {{$s.Used}}</span>{{end}}</td></tr>
+{{end}}</table>
+{{else}}<p class="muted">no discovery yet (static users, or first collection not finished)</p>{{end}}
+</body></html>`))
 
 func trimFloat(x float64) string {
 	if math.IsInf(x, 0) {

@@ -49,7 +49,9 @@ func main() {
 		if err := st.loadHistory(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "load history:", err)
 		}
-		go collectLoop(ctx, newCollector(cfg, c, cache), st)
+		col := newCollector(cfg, c, cache)
+		col.onUsers = st.setDiscovery
+		go collectLoop(ctx, col, st)
 		fmt.Fprintf(os.Stderr, "listening on %s\n", *addr)
 		if err := http.ListenAndServe(*addr, newServer(st)); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -79,8 +81,17 @@ type collector struct {
 	cfg       config
 	c         *ddClient
 	cache     Cache
-	users     map[string][]string // per scope
+	users     map[string][]string // per scope, the monitored set
 	refreshed map[string]time.Time
+	onUsers   func(scope string, d discovery) // optional, feeds the debug page
+}
+
+// discovery is the result of one top-users lookup for a scope.
+type discovery struct {
+	Query string
+	At    time.Time
+	Used  int // first Used entries are monitored
+	Users []userCount
 }
 
 func newCollector(cfg config, c *ddClient, cache Cache) *collector {
@@ -136,12 +147,20 @@ func (col *collector) resolveUsers(ctx context.Context, scfg config, scope strin
 	if cur := col.users[scope]; len(cur) > 0 && time.Since(col.refreshed[scope]) < scfg.TopUsers.Refresh {
 		return cur, nil
 	}
-	u, err := col.c.topUsers(ctx, scfg, time.Now().UTC())
+	found, query, err := col.c.topUsers(ctx, scfg, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(os.Stderr, "users[%s] top %d: %s\n", scope, len(u), strings.Join(u, ","))
+	n := min(scfg.TopUsers.Count, len(found))
+	u := make([]string, n)
+	for i := range u {
+		u[i] = found[i].User
+	}
+	fmt.Fprintf(os.Stderr, "users[%s] top %d of %d: %s\n", scope, n, len(found), strings.Join(u, ","))
 	col.users[scope], col.refreshed[scope] = u, time.Now()
+	if col.onUsers != nil {
+		col.onUsers(scope, discovery{Query: query, At: time.Now(), Used: n, Users: found})
+	}
 	return u, nil
 }
 
