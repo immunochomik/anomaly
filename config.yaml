@@ -1,5 +1,10 @@
-# example user; USERS env (comma separated) overrides. SM_REGION env appends sm-region:<value>
-users: [tomaszs]
+# Users: static `users` list or USERS env wins; otherwise top_users discovery (default).
+# SM_REGION env appends sm-region:<value> to base_query.
+# users: [tomaszs]
+top_users:
+  count: 20
+  match: {"@msg": [SESSION_CONFIG]}
+  refresh: 24h
 user_facet: "@userid"
 base_query: "sm-env:prod-rt service:proxy-service"
 window: 10m

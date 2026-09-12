@@ -19,6 +19,7 @@ type windowValues map[string]map[string]float64
 
 type ddClient struct {
 	apiKey, appKey, site string
+	baseURL              string // overrides https://api.<site> (tests)
 	http                 *http.Client
 	minGap               time.Duration
 	lastCall             time.Time
@@ -44,8 +45,15 @@ type compute struct {
 }
 
 type groupBy struct {
-	Facet string `json:"facet"`
-	Limit int    `json:"limit"`
+	Facet string     `json:"facet"`
+	Limit int        `json:"limit"`
+	Sort  *groupSort `json:"sort,omitempty"`
+}
+
+type groupSort struct {
+	Type        string `json:"type"`
+	Aggregation string `json:"aggregation"`
+	Order       string `json:"order"`
 }
 
 type aggregateResp struct {
@@ -60,7 +68,7 @@ type aggregateResp struct {
 // fetchWindow fetches all metrics for one window. Metrics sharing the same match facets go in
 // one call, grouped by user + those facets; facet limits equal the matched values, so bucket
 // counts stay small and exact.
-func (c *ddClient) fetchWindow(ctx context.Context, cfg config, from, to time.Time) (windowValues, error) {
+func (c *ddClient) fetchWindow(ctx context.Context, cfg config, users []string, from, to time.Time) (windowValues, error) {
 	groups := map[string][]metric{}
 	var order []string
 	for _, m := range cfg.Metrics {
@@ -72,7 +80,7 @@ func (c *ddClient) fetchWindow(ctx context.Context, cfg config, from, to time.Ti
 	}
 	w := windowValues{}
 	for _, k := range order {
-		part, err := c.fetchGroup(ctx, cfg, groups[k], from, to)
+		part, err := c.fetchGroup(ctx, cfg, users, groups[k], from, to)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +91,7 @@ func (c *ddClient) fetchWindow(ctx context.Context, cfg config, from, to time.Ti
 	return w, nil
 }
 
-func (c *ddClient) fetchGroup(ctx context.Context, cfg config, metrics []metric, from, to time.Time) (windowValues, error) {
+func (c *ddClient) fetchGroup(ctx context.Context, cfg config, users []string, metrics []metric, from, to time.Time) (windowValues, error) {
 	facets := matchFacets(metrics)
 	computes, idx := buildComputes(metrics)
 	countIdx := idx["count|"]
@@ -93,27 +101,19 @@ func (c *ddClient) fetchGroup(ctx context.Context, cfg config, metrics []metric,
 		parts = append(parts, "("+matchQuery(m.Match)+")")
 	}
 	query := fmt.Sprintf("%s %s:(%s) (%s)", cfg.BaseQuery, cfg.UserFacet,
-		strings.Join(cfg.Users, " OR "), strings.Join(parts, " OR "))
+		strings.Join(users, " OR "), strings.Join(parts, " OR "))
 
-	gb := []groupBy{{Facet: cfg.UserFacet, Limit: len(cfg.Users)}}
+	gb := []groupBy{{Facet: cfg.UserFacet, Limit: len(users)}}
 	for _, f := range facets {
 		gb = append(gb, groupBy{Facet: f, Limit: facetValues(metrics, f)})
 	}
-	body, err := json.Marshal(aggregateReq{
+	out, err := c.aggregate(ctx, aggregateReq{
 		Filter:  filter{Query: strings.TrimSpace(query), From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Indexes: []string{"*"}},
 		Compute: computes,
 		GroupBy: gb,
 	})
 	if err != nil {
 		return nil, err
-	}
-	raw, err := c.doWithRetry(ctx, fmt.Sprintf("https://api.%s/api/v2/logs/analytics/aggregate", c.site), body)
-	if err != nil {
-		return nil, err
-	}
-	var out aggregateResp
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
 	}
 
 	type acc struct{ sum, weight float64 }
@@ -154,6 +154,51 @@ func (c *ddClient) fetchGroup(ctx context.Context, cfg config, metrics []metric,
 		}
 	}
 	return w, nil
+}
+
+// topUsers returns the most active users over the sampling range by TopUsers.Match count.
+func (c *ddClient) topUsers(ctx context.Context, cfg config, now time.Time) ([]string, error) {
+	from := now.AddDate(0, 0, -7*cfg.Weeks)
+	query := strings.TrimSpace(cfg.BaseQuery + " " + matchQuery(cfg.TopUsers.Match))
+	out, err := c.aggregate(ctx, aggregateReq{
+		Filter:  filter{Query: query, From: from.Format(time.RFC3339), To: now.Format(time.RFC3339), Indexes: []string{"*"}},
+		Compute: []compute{{Aggregation: "count", Type: "total"}},
+		GroupBy: []groupBy{{Facet: cfg.UserFacet, Limit: cfg.TopUsers.Count,
+			Sort: &groupSort{Type: "measure", Aggregation: "count", Order: "desc"}}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var users []string
+	for _, b := range out.Data.Buckets {
+		if u := b.By[cfg.UserFacet]; u != "" {
+			users = append(users, u)
+		}
+	}
+	if len(users) == 0 {
+		return nil, fmt.Errorf("top users: no users found for %q", query)
+	}
+	return users, nil
+}
+
+func (c *ddClient) aggregate(ctx context.Context, req aggregateReq) (aggregateResp, error) {
+	var out aggregateResp
+	body, err := json.Marshal(req)
+	if err != nil {
+		return out, err
+	}
+	base := c.baseURL
+	if base == "" {
+		base = "https://api." + c.site
+	}
+	raw, err := c.doWithRetry(ctx, base+"/api/v2/logs/analytics/aggregate", body)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, fmt.Errorf("decode: %w", err)
+	}
+	return out, nil
 }
 
 // facetValues counts distinct matched values of a facet across metrics (case-insensitive).

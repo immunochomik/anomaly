@@ -23,6 +23,7 @@ type state struct {
 	site  string // DD site for explorer links
 
 	mu       sync.RWMutex
+	users    []string
 	verdicts []verdict
 	err      error
 	updated  time.Time
@@ -50,6 +51,12 @@ func (s *state) loadHistory(ctx context.Context) error {
 		s.set(vs, nil)
 	}
 	return nil
+}
+
+func (s *state) setUsers(users []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.users = users
 }
 
 func (s *state) set(vs []verdict, err error) {
@@ -232,7 +239,9 @@ func (*notFound) Error() string { return "run not found" }
 func (s *state) handlePage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
-	p := page{Interval: s.cfg.Interval, Users: len(s.cfg.Users), Live: true}
+	s.mu.RLock()
+	p := page{Interval: s.cfg.Interval, Users: len(s.users), Live: true}
+	s.mu.RUnlock()
 
 	keys, err := s.cache.Keys(ctx, runPrefix(s.cfg))
 	if err != nil {

@@ -16,7 +16,7 @@ metadata:
 data:
   DD_SITE: datadoghq.eu
   SM_REGION: usa
-  USERS: jumpspeak,deepl,contentguru,selfservice,iflytek,aquavoice,besistem.d.o.o,noteless,dyna.ai,selfservice-176208,broadstream,exotel,upmeet,boostai,K2MBILISIMLTD,nordhealth,kiroku,bliro,xonhealth,enreach,epro,sterlinglabsdrafttherecordai,carescribe,livekit,smzelus,interfaceai,showcasepro,broadteam
+  # USERS: a,b   # optional static list; default is top_users discovery
   config.yaml: |
     user_facet: "@userid"
     base_query: "sm-env:prod-rt service:proxy-service"
@@ -28,6 +28,10 @@ data:
     min_samples_mad: 6
     mad_k: 3
     gap: 4s
+    top_users:
+      count: 20
+      match: {"@msg": [SESSION_CONFIG]}
+      refresh: 24h
     cache:
       type: postgres   # dsn from CACHE_DSN
     metrics:

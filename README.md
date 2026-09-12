@@ -37,7 +37,8 @@ matches, grouped by `user_facet` plus match facets. `aggregation` is any Datadog
 (`count`, `avg`, `sum`, `pcXX`); non-count needs `measure`.
 
 `cache.type`: `memory`, `disk` (`path`), or `postgres` (`dsn` or `CACHE_DSN` env).
-Changing users, `base_query`, or metrics invalidates the cache.
+Changing `base_query` or metrics invalidates the cache. Windows record which users they cover, so
+a changed user set only fetches the missing users.
 
 ## Datadog limits
 

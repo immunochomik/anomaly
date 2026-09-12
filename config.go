@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,7 +13,8 @@ import (
 )
 
 type config struct {
-	Users          []string      `yaml:"users"`
+	Users          []string      `yaml:"users"` // static list; if empty, TopUsers discovery is used
+	TopUsers       topUsers      `yaml:"top_users"`
 	UserFacet      string        `yaml:"user_facet"`
 	BaseQuery      string        `yaml:"base_query"`
 	Window         time.Duration `yaml:"window"`
@@ -29,6 +29,12 @@ type config struct {
 	Metrics        []metric      `yaml:"metrics"`
 
 	hash string
+}
+
+type topUsers struct {
+	Count   int                 `yaml:"count"`
+	Match   map[string][]string `yaml:"match"`
+	Refresh time.Duration       `yaml:"refresh"`
 }
 
 type cacheConfig struct {
@@ -71,8 +77,14 @@ func loadConfig(path string) (config, error) {
 	if dsn := os.Getenv("CACHE_DSN"); dsn != "" {
 		cfg.Cache.DSN = dsn
 	}
-	if len(cfg.Users) == 0 || len(cfg.Metrics) == 0 {
-		return cfg, fmt.Errorf("%s: users (or USERS env) and metrics required", path)
+	if len(cfg.Metrics) == 0 {
+		return cfg, fmt.Errorf("%s: metrics required", path)
+	}
+	if cfg.TopUsers.Count == 0 {
+		cfg.TopUsers.Count = 20
+	}
+	if len(cfg.TopUsers.Match) == 0 {
+		cfg.TopUsers.Match = map[string][]string{"@msg": {"SESSION_CONFIG"}}
 	}
 	def := func(d *time.Duration, v time.Duration) {
 		if *d == 0 {
@@ -82,6 +94,7 @@ func loadConfig(path string) (config, error) {
 	def(&cfg.Window, 10*time.Minute)
 	def(&cfg.Lag, time.Minute)
 	def(&cfg.Interval, cfg.Window)
+	def(&cfg.TopUsers.Refresh, 24*time.Hour)
 	def(&cfg.Gap, 4*time.Second)
 	if cfg.UserFacet == "" {
 		cfg.UserFacet = "@userid"
@@ -124,14 +137,12 @@ func loadConfig(path string) (config, error) {
 }
 
 // configHash keys the cache; anything that changes fetched values must be in it.
+// Users are not: windows record which users they hold and missing ones are fetched on demand.
 func configHash(cfg config) string {
-	users := append([]string(nil), cfg.Users...)
-	sort.Strings(users)
 	b, _ := json.Marshal(struct {
 		Base, Facet string
-		Users       []string
 		Metrics     []metric
-	}{cfg.BaseQuery, cfg.UserFacet, users, cfg.Metrics})
+	}{cfg.BaseQuery, cfg.UserFacet, cfg.Metrics})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:6])
 }
