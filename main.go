@@ -140,23 +140,9 @@ func (col *collector) resolveUsers(ctx context.Context, scfg config, scope strin
 	if err != nil {
 		return nil, err
 	}
-	if !equalStrings(u, col.users[scope]) {
-		fmt.Fprintf(os.Stderr, "users[%s]: %s\n", scope, strings.Join(u, ","))
-	}
+	fmt.Fprintf(os.Stderr, "users[%s] top %d: %s\n", scope, len(u), strings.Join(u, ","))
 	col.users[scope], col.refreshed[scope] = u, time.Now()
 	return u, nil
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func run(ctx context.Context, cfg config, users []string, c *ddClient, cache Cache) ([]verdict, error) {
