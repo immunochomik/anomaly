@@ -12,6 +12,7 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "config file")
+	addr := flag.String("serve", "", "run collector in background and serve web UI on this address, e.g. :8080")
 	flag.Parse()
 
 	cfg, err := loadConfig(*cfgPath)
@@ -42,32 +43,65 @@ func main() {
 	}
 	defer cache.Close()
 
-	if err := run(ctx, cfg, c, cache); err != nil {
+	if *addr != "" {
+		st := newState()
+		go collectLoop(ctx, cfg, c, cache, st)
+		fmt.Fprintf(os.Stderr, "listening on %s\n", *addr)
+		if err := http.ListenAndServe(*addr, newServer(st, cfg)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	verdicts, err := run(ctx, cfg, c, cache)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	anomalies := 0
+	for _, v := range verdicts {
+		printVerdict(v)
+		if v.anomaly {
+			anomalies++
+		}
+	}
+	if anomalies > 0 {
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, cfg config, c *ddClient, cache Cache) error {
+func collectLoop(ctx context.Context, cfg config, c *ddClient, cache Cache, st *state) {
+	for {
+		verdicts, err := run(ctx, cfg, c, cache)
+		st.set(verdicts, err)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "collect:", err)
+		}
+		time.Sleep(cfg.Interval)
+	}
+}
+
+func run(ctx context.Context, cfg config, c *ddClient, cache Cache) ([]verdict, error) {
 	// Align to window boundary so windows are reusable as history by later runs.
 	to := time.Now().UTC().Add(-cfg.Lag).Truncate(cfg.Window)
 	from := to.Add(-cfg.Window)
 
 	cur, err := getWindow(ctx, cfg, c, cache, from)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	starts := sampleStarts(from, cfg)
 	hist := make([]windowValues, 0, len(starts))
 	for _, s := range starts {
 		w, err := getWindow(ctx, cfg, c, cache, s)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		hist = append(hist, w)
 	}
 
-	anomalies := 0
+	var out []verdict
 	for _, m := range cfg.Metrics {
 		for _, u := range cfg.Users {
 			v := verdict{user: u, metric: m.Name}
@@ -84,17 +118,12 @@ func run(ctx context.Context, cfg config, c *ddClient, cache Cache) error {
 					v.samples = append(v.samples, x)
 				}
 			}
+			v.window = from
 			judge(&v, m, cfg)
-			printVerdict(v)
-			if v.anomaly {
-				anomalies++
-			}
+			out = append(out, v)
 		}
 	}
-	if anomalies > 0 {
-		return fmt.Errorf("%d anomalies", anomalies)
-	}
-	return nil
+	return out, nil
 }
 
 func getWindow(ctx context.Context, cfg config, c *ddClient, cache Cache, from time.Time) (windowValues, error) {

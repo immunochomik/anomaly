@@ -18,7 +18,8 @@ type config struct {
 	UserFacet      string        `yaml:"user_facet"`
 	BaseQuery      string        `yaml:"base_query"`
 	Window         time.Duration `yaml:"window"`
-	Lag            time.Duration `yaml:"lag"` // ingestion lag; window ends this long before now
+	Lag            time.Duration `yaml:"lag"`      // ingestion lag; window ends this long before now
+	Interval       time.Duration `yaml:"interval"` // collection period in -serve mode
 	Weeks          int           `yaml:"weeks"`
 	WeekdaySamples int           `yaml:"weekday_samples"` // previous weekdays used on Mon-Fri
 	MinSamplesMAD  int           `yaml:"min_samples_mad"`
@@ -80,6 +81,7 @@ func loadConfig(path string) (config, error) {
 	}
 	def(&cfg.Window, 10*time.Minute)
 	def(&cfg.Lag, time.Minute)
+	def(&cfg.Interval, cfg.Window)
 	def(&cfg.Gap, 4*time.Second)
 	if cfg.UserFacet == "" {
 		cfg.UserFacet = "@userid"

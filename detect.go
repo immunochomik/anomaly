@@ -10,6 +10,7 @@ import (
 
 type verdict struct {
 	user, metric string
+	window       time.Time
 	current      float64
 	hasCurrent   bool
 	samples      []float64

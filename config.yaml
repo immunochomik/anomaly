@@ -4,6 +4,7 @@ user_facet: "@userid"
 base_query: "sm-env:prod-rt service:proxy-service"
 window: 10m
 lag: 1m
+interval: 10m       # collection period in -serve mode
 weeks: 4
 weekday_samples: 10   # Mon-Fri: also compare with the same time on recent weekdays
 min_samples_mad: 6
