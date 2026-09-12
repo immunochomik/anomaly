@@ -1,0 +1,108 @@
+# kubectl apply -f deploy/k8s.yaml
+# Create the secret first (not committed):
+#   kubectl create secret generic anomaly -n anomaly \
+#     --from-literal=DD_API_KEY=... --from-literal=DD_APP_KEY=... \
+#     --from-literal=CACHE_DSN=postgres://user:pass@host:5432/db
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: anomaly
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anomaly
+  namespace: anomaly
+data:
+  DD_SITE: datadoghq.eu
+  SM_REGION: usa
+  USERS: jumpspeak,deepl,contentguru,selfservice,iflytek,aquavoice,besistem.d.o.o,noteless,dyna.ai,selfservice-176208,broadstream,exotel,upmeet,boostai,K2MBILISIMLTD,nordhealth,kiroku,bliro,xonhealth,enreach,epro,sterlinglabsdrafttherecordai,carescribe,livekit,smzelus,interfaceai,showcasepro,broadteam
+  config.yaml: |
+    user_facet: "@userid"
+    base_query: "sm-env:prod-rt service:proxy-service"
+    window: 10m
+    lag: 1m
+    interval: 10m
+    weeks: 4
+    weekday_samples: 10
+    min_samples_mad: 6
+    mad_k: 3
+    gap: 4s
+    cache:
+      type: postgres   # dsn from CACHE_DSN
+    metrics:
+      - name: session_config_count
+        match: {"@msg": [SESSION_CONFIG]}
+        aggregation: count
+        min_value: 10
+      - name: avg_session_duration
+        match: {"@msg": [CONNECTION_CLOSED]}
+        aggregation: avg
+        measure: "@context.session_duration"
+      - name: proxy_warn_error_count
+        match: {status: [warn, error]}
+        aggregation: count
+        min_value: 10
+        alert_if_no_history: true
+      - name: median_final_lag_ms
+        match: {"@msg": ["connection usage stats"]}
+        aggregation: pc50
+        measure: "@g.final_lag"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anomaly
+  namespace: anomaly
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # single collector; avoid two instances hitting Datadog
+  selector:
+    matchLabels: {app: anomaly}
+  template:
+    metadata:
+      labels: {app: anomaly}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: anomaly
+          image: anomaly:latest   # replace with your registry image
+          args: ["-config", "/etc/anomaly/config.yaml", "-serve", ":8080"]
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef: {name: anomaly}
+            - secretRef: {name: anomaly}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/anomaly
+              readOnly: true
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /api/results, port: 8080}
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: {path: /api/results, port: 8080}
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: anomaly
+            items:
+              - key: config.yaml
+                path: config.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anomaly
+  namespace: anomaly
+spec:
+  selector: {app: anomaly}
+  ports:
+    - port: 80
+      targetPort: 8080
