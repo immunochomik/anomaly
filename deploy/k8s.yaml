@@ -36,6 +36,7 @@ data:
       refresh: 24h
     cache:
       type: postgres   # dsn from CACHE_DSN
+      capacity: 20000  # ring size in rows, oldest overwritten
     metrics:
       - name: session_config_count
         match: {"@msg": [SESSION_CONFIG]}

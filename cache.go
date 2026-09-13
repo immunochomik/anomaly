@@ -55,7 +55,7 @@ func newCache(ctx context.Context, cc cacheConfig) (Cache, error) {
 	case "disk":
 		return newDiskCache(cc.Path)
 	case "postgres":
-		return newPgCache(ctx, cc.DSN)
+		return newPgCache(ctx, cc)
 	}
 	return nil, fmt.Errorf("unknown cache type %q", cc.Type)
 }

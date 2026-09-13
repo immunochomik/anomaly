@@ -40,9 +40,10 @@ type topUsers struct {
 }
 
 type cacheConfig struct {
-	Type string `yaml:"type"` // memory, disk, postgres
-	Path string `yaml:"path"` // disk dir
-	DSN  string `yaml:"dsn"`  // postgres; CACHE_DSN env overrides
+	Type     string `yaml:"type"`     // memory, disk, postgres
+	Path     string `yaml:"path"`     // disk dir
+	DSN      string `yaml:"dsn"`      // postgres; CACHE_DSN env overrides
+	Capacity int    `yaml:"capacity"` // postgres ring size in rows
 }
 
 type metric struct {
@@ -115,6 +116,9 @@ func loadConfig(path string) (config, error) {
 	}
 	if cfg.Cache.Type == "" {
 		cfg.Cache.Type = "memory"
+	}
+	if cfg.Cache.Capacity == 0 {
+		cfg.Cache.Capacity = 20000
 	}
 	for i := range cfg.Metrics {
 		m := &cfg.Metrics[i]

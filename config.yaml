@@ -24,6 +24,7 @@ cache:
   type: disk          # memory | disk | postgres
   path: .cache
   # dsn: postgres://user:pass@host/db   (or CACHE_DSN env)
+  # capacity: 20000     # postgres ring size; ~430 rows/day for 2 scopes at 10m windows
 
 # All metrics go into one Datadog call per window: filter is the OR of all `match` blocks,
 # grouped by user + match facets. Values are picked from matching buckets locally.

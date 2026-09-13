@@ -46,7 +46,9 @@ Datadog request: filter is the OR of their matches, grouped by `user_facet` plus
 `aggregation` is any Datadog compute (`count`, `avg`, `sum`, `pcXX`); non-count needs `measure`.
 
 `cache.type`: `memory`, `disk` (`path`), or `postgres` (`dsn` or `CACHE_DSN` env). The cache
-holds fetched windows (immutable) and each run's verdicts. Changing `base_query`, scopes or
+holds fetched windows (immutable) and each run's verdicts. Postgres is a fixed ring of
+`cache.capacity` rows (default 20000): a cycling sequence assigns slots, so new keys overwrite the
+oldest rows once full. Two scopes at 10-minute windows use ~430 rows/day. Changing `base_query`, scopes or
 metrics invalidates windows. Windows record which users they cover, so a changed user set only
 fetches the missing users.
 
