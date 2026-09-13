@@ -118,7 +118,7 @@ func loadConfig(path string) (config, error) {
 		cfg.Cache.Type = "memory"
 	}
 	if cfg.Cache.Capacity == 0 {
-		cfg.Cache.Capacity = 20000
+		cfg.Cache.Capacity = 100000
 	}
 	for i := range cfg.Metrics {
 		m := &cfg.Metrics[i]
