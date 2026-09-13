@@ -20,9 +20,14 @@ CREATE TABLE IF NOT EXISTS anomaly_ring (
 	value      jsonb NOT NULL,
 	created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE SEQUENCE IF NOT EXISTS anomaly_ring_slot MINVALUE 1 MAXVALUE %d CYCLE;
-ALTER SEQUENCE anomaly_ring_slot MAXVALUE %d;
-DELETE FROM anomaly_ring WHERE slot > %d;`
+CREATE SEQUENCE IF NOT EXISTS anomaly_ring_slot MINVALUE 1 MAXVALUE %[1]d CYCLE;
+DO $$ BEGIN
+	IF (SELECT last_value FROM anomaly_ring_slot) > %[1]d THEN
+		ALTER SEQUENCE anomaly_ring_slot RESTART;
+	END IF;
+END $$;
+ALTER SEQUENCE anomaly_ring_slot MAXVALUE %[1]d;
+DELETE FROM anomaly_ring WHERE slot > %[1]d;`
 
 func newPgCache(ctx context.Context, cc cacheConfig) (*pgCache, error) {
 	if cc.DSN == "" {
@@ -33,7 +38,7 @@ func newPgCache(ctx context.Context, cc cacheConfig) (*pgCache, error) {
 		return nil, err
 	}
 	n := cc.Capacity
-	if _, err := pool.Exec(ctx, fmt.Sprintf(pgSchema, n, n, n)); err != nil {
+	if _, err := pool.Exec(ctx, fmt.Sprintf(pgSchema, n)); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("postgres cache schema: %w", err)
 	}
